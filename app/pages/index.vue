@@ -24,7 +24,7 @@ setInterval(() => {
     countdown.value--
   }
 
-  if (countdown.value == 0 && !showCountdown.value) {
+  if (countdown.value == 0 && showCountdown.value) {
     showCountdown.value = false
     $fetch('/api/capture')
   }
