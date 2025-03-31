@@ -11,7 +11,7 @@ export default defineNitroPlugin((nitroApp) => {
        console.log(param, value);
     });
     cam.on('liveviewJpeg', function(image) {
-        context.camera.image = image
+        context.camera.image = image.toString('base64')
         console.log('camera.liveviewJpeg', image.toString('base64'));
     });
 
