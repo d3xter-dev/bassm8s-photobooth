@@ -32,7 +32,7 @@ setInterval(() => {
 </script>
 
 <template>
-  <div class="w-full h-svh bg-black/5" :style="{ backgroundImage: `url('data:image/jpeg;base64,${streamPreview}')` }"  @click="onTriggerCountdown"></div>
+  <div class="w-full h-svh bg-black/5" :style="{ backgroundImage: `url('data:image/png;base64,${streamPreview}')` }"  @click="onTriggerCountdown"></div>
   <div v-if="showCountdown" class="flex justify-center items-center h-svh w-full absolute top-0 left-0">
     <div class="flex gap-2 items-center">
       <div class="text-3xl font-bold text-black">
