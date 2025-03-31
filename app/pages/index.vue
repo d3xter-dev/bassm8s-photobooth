@@ -3,8 +3,10 @@ const streamPreview = ref<string>('');
 
 onMounted(() => {
   setInterval(async () => {
-    streamPreview.value = await $fetch('/api/stream');
-  }, 30 / 1000) // 30 fps
+    const res = await $fetch('/api/stream')
+    console.log(res)
+    streamPreview.value = res;
+  },  1000) // 30 fps
 })
 
 
@@ -20,6 +22,11 @@ const onTriggerCountdown = () => {
 setInterval(() => {
   if (countdown.value > 0) {
     countdown.value--
+  }
+
+  if (countdown.value == 0) {
+    showCountdown.value = false
+    $fetch('/api/capture')
   }
 }, 1000)
 </script>
