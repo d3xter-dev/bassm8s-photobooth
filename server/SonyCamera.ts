@@ -5,7 +5,7 @@ import { request, get } from 'http';
 import semver from 'semver';
 import { EventEmitter } from 'events';
 
-const minVersionRequired = '2.1.4';
+const minVersionRequired = '2.0.0';
 
 interface RpcRequest {
     id: number;
