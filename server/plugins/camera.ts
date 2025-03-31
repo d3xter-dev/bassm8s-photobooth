@@ -6,6 +6,7 @@ export default defineNitroPlugin((nitroApp) => {
     console.log('Camera plugin')
 
     const cam = new SonyCamera();
+    context.camera.cam = cam
 
     cam.on('update', function(param, value) {
        console.log(param, value);
