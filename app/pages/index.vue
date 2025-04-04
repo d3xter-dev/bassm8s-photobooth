@@ -1,15 +1,27 @@
 <script setup lang="ts">
 const streamPreview = ref<string>('');
+const imageData = ref('');
 
+// Fetch stream data on regular intervals
 onMounted(() => {
-  setInterval(async () => {
-    const res = await $fetch('/api/stream')
-    console.log(res)
-    streamPreview.value = res;
-  },  1000) // 30 fps
-})
+  fetchStreamData();
+});
 
-
+const fetchStreamData = () => {
+  $fetch('/api/stream')
+    .then((data) => {
+      if (data) {
+        imageData.value = `data:image/jpeg;base64,${data}`;
+      }
+      // Continue polling
+      setTimeout(fetchStreamData, 24 / 1000);
+    })
+    .catch(error => {
+      console.error('Error fetching stream data:', error);
+      // Retry after a delay
+      setTimeout(fetchStreamData, 1000);
+    });
+};
 
 const showCountdown = ref(false)
 const countdown = ref(0)
@@ -36,11 +48,18 @@ const onCapture = () => {
 </script>
 
 <template>
-  <div class="w-full h-svh bg-black/5 bg-cover bg-no-repeat" :style="{ backgroundImage: `url('data:image/png;base64,${streamPreview}')` }"  @click="onTriggerCountdown"></div>
-  <div v-if="showCountdown" class="flex justify-center items-center h-svh w-full absolute top-0 left-0 bg-black/10">
-    <div class="flex gap-2 items-center">
-      <div class="text-[20rem] font-bold text-black">
-        {{ countdown }}
+  <div class="relative w-full h-svh bg-black/5">
+    <img 
+      v-if="imageData" 
+      :src="imageData" 
+      class="w-full h-svh object-cover"
+      @click="onTriggerCountdown"
+    />
+    <div v-if="showCountdown" class="flex justify-center items-center h-svh w-full absolute top-0 left-0 bg-black/10">
+      <div class="flex gap-2 items-center">
+        <div class="text-[20rem] font-bold text-black">
+          {{ countdown }}
+        </div>
       </div>
     </div>
   </div>

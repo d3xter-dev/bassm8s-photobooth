@@ -4,6 +4,7 @@ import { URL } from 'url';
 import { request, get } from 'http';
 import semver from 'semver';
 import { EventEmitter } from 'events';
+import {emit} from "nitropack/presets/_unenv/workerd/process";
 
 const minVersionRequired = '2.0.0';
 
@@ -219,6 +220,8 @@ class SonyCamera extends EventEmitter {
                             callback && callback(err);
                             _checkEvents();
                         });
+
+                        self.emit('connect');
                     };
                     if(self.method == "old") {
                         self.call('startRecMode', null, function(err: any) {
@@ -289,22 +292,29 @@ class SonyCamera extends EventEmitter {
 
                             paddingSize = buffer.readUInt8(COMMON_HEADER_SIZE + PADDING_SIZE_POSITION);
 
-                            buffer = buffer.slice(8 + 128);
+                            buffer = buffer.subarray(COMMON_HEADER_SIZE + PAYLOAD_HEADER_SIZE);
                             if (buffer.length > 0) {
-                                buffer.copy(imageBuffer, bufferIndex, 0, buffer.length);
-                                bufferIndex += buffer.length;
+                                const copyLength = Math.min(buffer.length, jpegSize);
+                                buffer.copy(imageBuffer, bufferIndex, 0, copyLength);
+                                bufferIndex += copyLength;
+                                jpegSize -= copyLength;
+                                
+                                if (jpegSize === 0) {
+                                    self.emit('liveviewJpeg', imageBuffer);
+                                    buffer = buffer.subarray(copyLength + paddingSize);
+                                    bufferIndex = 0;
+                                }
                             }
                         }
                     } else {
-                        chunk.copy(imageBuffer, bufferIndex, 0, chunk.length);
-                        bufferIndex += chunk.length;
+                        const copyLength = Math.min(chunk.length, jpegSize);
+                        chunk.copy(imageBuffer, bufferIndex, 0, copyLength);
+                        bufferIndex += copyLength;
+                        jpegSize -= copyLength;
 
-                        if (chunk.length < jpegSize) {
-                            jpegSize -= chunk.length;
-                        } else {
+                        if (jpegSize === 0) {
                             self.emit('liveviewJpeg', imageBuffer);
-                            buffer = chunk.slice(jpegSize + paddingSize);
-                            jpegSize = 0;
+                            buffer = chunk.subarray(copyLength + paddingSize);
                             bufferIndex = 0;
                         }
                     }

@@ -8,7 +8,5 @@ export default defineEventHandler(async (event) => {
         console.log(err, photoName, data)
     })
 
-    cam.startViewfinder()
-
     return "ok"
 })
