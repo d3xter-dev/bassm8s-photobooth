@@ -13,7 +13,7 @@ export default defineEventHandler(async (event) => {
             console.log(photoName)
             if(!data) return resolve('')
 
-            bot.sendPhoto('BASSM8S_Photobooth', Buffer.from(data), {caption: photoName})
+            bot.sendPhoto('@BASSM8S_Photobooth', Buffer.from(data), {caption: photoName})
 
             resolve(data?.toString('base64'))
         })
