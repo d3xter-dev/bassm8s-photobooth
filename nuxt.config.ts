@@ -28,6 +28,13 @@ export default defineNuxtConfig({
     }
   },
 
+  nitro: {
+    serverAssets: [{
+      baseName: 'assets',
+      dir: './assets'
+    }]
+  },
+
   devtools: { enabled: false },
   modules: [
     '@nuxt/eslint',
