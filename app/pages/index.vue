@@ -62,6 +62,7 @@ const onCapture = async () => {
       :src="finalImage ? finalImage : imageData"
       class="w-full h-svh object-cover"
     />
+    <img src="/qr-code.svg" class="absolute left-0 bottom-0 w-64">
     <div v-if="showCountdown || (takingPicture && finalImage == undefined)" class="flex justify-center items-center h-svh w-full absolute top-0 left-0 bg-black/20">
       <div class="flex gap-2 items-center w-full h-full justify-center">
         <div class="text-[20rem] font-bold text-white flex items-center justify-center">
