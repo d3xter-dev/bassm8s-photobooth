@@ -17,6 +17,16 @@ export default defineNuxtConfig({
     ],
   },
 
+  runtimeConfig: {
+    // Keys within public are also exposed to the client
+    public: {
+      // Public runtime config
+    },
+    // Server-only environment variables
+    telegram: {
+      token: process.env.TELEGRAM_BOT_TOKEN ?? '',
+    }
+  },
 
   devtools: { enabled: false },
   modules: [

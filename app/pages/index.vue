@@ -1,12 +1,7 @@
 <script setup lang="ts">
-const streamPreview = ref<string>('');
 const imageData = ref('');
 
 // Fetch stream data on regular intervals
-onMounted(() => {
-  fetchStreamData();
-});
-
 const fetchStreamData = () => {
   $fetch('/api/stream')
     .then((data) => {
@@ -22,11 +17,16 @@ const fetchStreamData = () => {
       setTimeout(fetchStreamData, 1000);
     });
 };
+onMounted(fetchStreamData);
 
 const showCountdown = ref(false)
 const countdown = ref(0)
+const takingPicture = ref(false)
 
 const onTriggerCountdown = () => {
+  if(takingPicture.value) return
+
+  takingPicture.value = true
   showCountdown.value = true
   countdown.value = 5
 
@@ -41,9 +41,18 @@ const onTriggerCountdown = () => {
   }, 1000)
 }
 
-const onCapture = () => {
+const finalImage = ref<string|undefined>();
+const onCapture = async () => {
   showCountdown.value = false
-  $fetch('/api/capture')
+  finalImage.value = `data:image/jpeg;base64,${await $fetch('/api/capture')}`;
+
+  console.log(finalImage.value)
+
+  setTimeout(() => {
+    takingPicture.value = false
+    finalImage.value = undefined
+    showCountdown.value = false
+  }, 5000) // show picture for 5 seconds
 }
 </script>
 
@@ -51,9 +60,9 @@ const onCapture = () => {
   <div class="relative w-full h-svh bg-black/5">
     <img 
       v-if="imageData" 
-      :src="imageData" 
+      :src="finalImage ? finalImage : imageData"
       class="w-full h-svh object-cover"
-      @click="onTriggerCountdown"
+      @mousedown="onTriggerCountdown"
     />
     <div v-if="showCountdown" class="flex justify-center items-center h-svh w-full absolute top-0 left-0 bg-black/10">
       <div class="flex gap-2 items-center">
