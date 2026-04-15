@@ -24,7 +24,10 @@ export default defineNuxtConfig({
     },
     // Server-only environment variables
     telegram: {
-      token: process.env.TELEGRAM_BOT_TOKEN ?? '',
+      token:  '',
+    },
+    camera: {
+      type: '',
     }
   },
 

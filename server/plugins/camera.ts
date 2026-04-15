@@ -1,22 +1,19 @@
 import {context} from "~~/server/main";
-import SonyCamera from "~~/server/SonyCamera";
+import { createCamera } from '~~/server/camera';
+import { loggerPluginCamera as logger } from '~~/server/utils/logger';
 
+export default defineNitroPlugin(async () => {
+    logger.info('Camera plugin initialized');
 
-export default defineNitroPlugin((nitroApp) => {
-    console.log('Camera plugin')
+    const cameraType = useRuntimeConfig().camera.type;
 
-    const cam = new SonyCamera();
+    const cam = createCamera(cameraType);
     context.camera.cam = cam
 
-    cam.on('liveviewJpeg', function(image) {
-        context.camera.image = image.toString('base64')
-    });
-
-    cam.on('connect', () => {
-        cam.startViewfinder()
-    })
-
-    cam.connect((err) => {
-        console.error(err)
-    });
+    try {
+        await cam.connect();
+        await cam.startLiveView();
+    } catch (err) {
+        logger.error('Failed to initialize camera strategy', err);
+    }
 })

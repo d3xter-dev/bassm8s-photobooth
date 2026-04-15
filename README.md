@@ -62,11 +62,11 @@ GET /api/capture
 ```
 Captures a photo using the connected Sony camera and returns the image as base64 data.
 
-### Stream Camera
+### LiveView WebSocket
 ```
-GET /api/stream
+WS /api/liveview
 ```
-Streams the camera viewfinder.
+Pushes live camera frames as binary websocket messages (JPEG bytes).
 
 ### Send to Telegram
 ```
