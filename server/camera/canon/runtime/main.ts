@@ -1,4 +1,8 @@
 /// <reference types="bun" />
+import { randomBytes } from 'node:crypto';
+import { writeFile, unlink } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { CommandQueue } from '../core/command-queue';
 import { EventBus } from '../core/event-bus';
 import { BridgeMetrics } from '../core/metrics';
@@ -265,12 +269,22 @@ export function startCanonBridgeServer(): void {
               return await session.capture();
             }, { timeoutMs: 70_000, label: 'capture' });
             bus.emit('capture.completed', { bytes: jpeg.length, at: Date.now() });
-            /* JSON + base64 avoids Bun Linux segfaults in Response/Body and TypedArray paths for binary JPEG. */
-            return Response.json({
-              ok: true,
-              mimeType: 'image/jpeg',
-              imageBase64: jpeg.toString('base64')
-            });
+            /* Write to disk and return path — avoids Bun binary Response + large base64 in JSON (Linux crashes). */
+            const outPath = join(
+              tmpdir(),
+              `bassm8s-canon-${Date.now()}-${randomBytes(8).toString('hex')}.jpg`
+            );
+            try {
+              await writeFile(outPath, jpeg);
+              return Response.json({
+                ok: true,
+                mimeType: 'image/jpeg',
+                path: outPath
+              });
+            } catch (writeErr) {
+              await unlink(outPath).catch(() => {});
+              throw writeErr;
+            }
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             bus.emit('capture.failed', { error: message, at: Date.now() });
