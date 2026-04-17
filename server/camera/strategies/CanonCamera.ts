@@ -1,4 +1,5 @@
 import type { ChildProcess } from 'node:child_process';
+import { readFile, unlink } from 'node:fs/promises';
 import type {
   CameraState,
   CameraStrategy,
@@ -384,17 +385,39 @@ export default class CanonCamera implements CameraStrategy {
         throw new Error(j.error || `capture failed: ${r.status}`);
       }
       if (contentType.includes('application/json')) {
-        const j = (await r.json()) as { ok?: boolean; imageBase64?: string; mimeType?: string; error?: string };
-        if (j.ok === false || !j.imageBase64) {
+        const j = (await r.json()) as {
+          ok?: boolean;
+          path?: string;
+          imageBase64?: string;
+          mimeType?: string;
+          error?: string;
+        };
+        if (j.ok === false) {
           throw new Error(j.error || 'capture failed');
         }
-        const data = Buffer.from(j.imageBase64, 'base64');
-        this.state = 'ready';
-        return {
-          mimeType: j.mimeType || 'image/jpeg',
-          data,
-          id: `canon-${Date.now()}`
-        };
+        if (j.path && typeof j.path === 'string') {
+          try {
+            const data = await readFile(j.path);
+            this.state = 'ready';
+            return {
+              mimeType: j.mimeType || 'image/jpeg',
+              data,
+              id: `canon-${Date.now()}`
+            };
+          } finally {
+            await unlink(j.path).catch(() => {});
+          }
+        }
+        if (j.imageBase64) {
+          const data = Buffer.from(j.imageBase64, 'base64');
+          this.state = 'ready';
+          return {
+            mimeType: j.mimeType || 'image/jpeg',
+            data,
+            id: `canon-${Date.now()}`
+          };
+        }
+        throw new Error(j.error || 'capture failed: no path or imageBase64');
       }
       const data = Buffer.from(await r.arrayBuffer());
       this.state = 'ready';
