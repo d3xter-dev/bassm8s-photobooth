@@ -309,7 +309,9 @@ export class EdsdkSession {
       err = e.EdsGetPointer(dlStream as never, ptr(ptrBuf));
       if (err !== EDS_ERR_OK) throw new Error(`EdsGetPointer: 0x${err.toString(16)}`);
       const p = readU64Ptr(ptrBuf);
-      const buf = bufferFromNativePtr(p, len);
+      const raw = bufferFromNativePtr(p, len);
+      /* `raw` views EDSDK memory owned by `dlStream`; release frees it — copy before release (UAF on base64/encode). */
+      const buf = Buffer.from(raw);
       e.EdsRelease(dlStream as never);
       try {
         await this.edsSetHostCapacityWithBusyRetry(this.cameraRef);
