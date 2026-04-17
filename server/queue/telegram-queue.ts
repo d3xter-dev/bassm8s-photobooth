@@ -98,7 +98,7 @@ export async function processTelegramQueue(): Promise<void> {
 
   const config = useRuntimeConfig();
   const token = config.telegram.token as string;
-  const chatId = (config.telegram.chatId as string) || '-1003984180174';
+  const chatId = (config.telegram.chatId as string);
 
   if (!token) {
     logger.warn('telegram.token missing; queue will not drain');
