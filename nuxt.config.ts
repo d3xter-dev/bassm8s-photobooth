@@ -15,6 +15,10 @@ export default defineNuxtConfig({
     plugins: [
       tailwindcss(),
     ],
+    /** Bun-only built-in; Vite cannot resolve it when analyzing the server graph. */
+    ssr: {
+      external: ['bun:ffi'],
+    },
   },
 
   runtimeConfig: {
@@ -24,10 +28,23 @@ export default defineNuxtConfig({
     },
     // Server-only environment variables
     telegram: {
-      token:  '',
+      token: '',
+      /** Target chat or channel for photo uploads (e.g. supergroup id). */
+      chatId: '',
     },
     camera: {
       type: '',
+      /** Base URL of the Bun canon-bridge (HTTP). Default matches CANON_BRIDGE_PORT. */
+      canonBridgeUrl: '',
+      /** Spawn `bun server/camera/canon/canon-bridge.ts` when type is canon */
+      canonBridgeAutostart: true,
+      canonBridgePort: 31337,
+      /** Zero-based EDSDK camera index */
+      canonCameraIndex: 0,
+      /** Optional: override path to EDSDK binary (default: server/vendor/esdk/macos/EDSDK.framework/...) */
+      edsdkMacosDylibPath: '',
+      /** Optional: override server/vendor/esdk root */
+      edsdkVendorRoot: '',
     }
   },
 
@@ -35,7 +52,13 @@ export default defineNuxtConfig({
     serverAssets: [{
       baseName: 'assets',
       dir: './assets'
-    }]
+    }],
+    rollupConfig: {
+      external: ['bun:ffi'],
+    },
+    experimental: {
+      websocket: true,
+    },
   },
 
   devtools: { enabled: false },

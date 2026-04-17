@@ -131,6 +131,9 @@ const { start: startPreviewTimeout, stop: stopPreviewTimeout } = useTimeoutFn(()
   finalImage.value = undefined;
 }, 5000, { immediate: false });
 
+/** Max time to show the capture loading spinner before returning to live interaction. */
+const CAPTURE_LOADING_TIMEOUT_MS = 2000;
+
 const finalImage = ref<string | undefined>();
 
 const onTriggerCountdown = () => {
@@ -145,10 +148,38 @@ const onTriggerCountdown = () => {
 const onCapture = async () => {
   showCountdown.value = false
   pauseCountdown();
-  finalImage.value = `data:image/jpeg;base64,${await $fetch('/api/capture')}`;
 
-  stopPreviewTimeout();
-  startPreviewTimeout();
+  const controller = new AbortController();
+  let loadingTimeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  loadingTimeoutId = setTimeout(() => {
+    loadingTimeoutId = undefined;
+    controller.abort();
+    takingPicture.value = false;
+  }, CAPTURE_LOADING_TIMEOUT_MS);
+
+  try {
+    const base64 = await $fetch<string>('/api/capture', { signal: controller.signal });
+    if (loadingTimeoutId !== undefined) {
+      clearTimeout(loadingTimeoutId);
+      loadingTimeoutId = undefined;
+    }
+    finalImage.value = `data:image/jpeg;base64,${base64}`;
+
+    stopPreviewTimeout();
+    startPreviewTimeout();
+  } catch (error: unknown) {
+    if (loadingTimeoutId !== undefined) {
+      clearTimeout(loadingTimeoutId);
+      loadingTimeoutId = undefined;
+    }
+    const aborted = error instanceof Error && error.name === 'AbortError';
+    if (aborted || controller.signal.aborted) {
+      return;
+    }
+    console.error('Capture failed:', error);
+    takingPicture.value = false;
+  }
 }
 </script>
 

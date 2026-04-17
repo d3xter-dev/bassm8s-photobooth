@@ -8,5 +8,7 @@ export function createCamera(type: CameraType): CameraStrategy {
       return new SonyCamera();
     case 'canon':
       return new CanonCamera();
+    default:
+      throw new Error(`Unsupported camera type: ${String(type)}`);
   }
 }
