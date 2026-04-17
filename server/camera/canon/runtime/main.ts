@@ -11,6 +11,13 @@ if (typeof Bun === 'undefined') {
   throw new Error('canon-bridge must run with Bun (requires bun:ffi)');
 }
 
+/** Copy into a standalone Uint8Array — passing Buffer to `Response` has triggered segfaults in Bun Body/Response on Linux. */
+function responseWithJpegBody(jpeg: Buffer): Response {
+  const body = new Uint8Array(jpeg.length);
+  body.set(jpeg);
+  return new Response(body, { status: 200, headers: { 'Content-Type': 'image/jpeg' } });
+}
+
 type ConnectBody = {
   cameraIndex?: number;
   edsdkMacosDylibPath?: string;
@@ -265,7 +272,7 @@ export function startCanonBridgeServer(): void {
               return await session.capture();
             }, { timeoutMs: 70_000, label: 'capture' });
             bus.emit('capture.completed', { bytes: jpeg.length, at: Date.now() });
-            return new Response(jpeg, { status: 200, headers: { 'Content-Type': 'image/jpeg' } });
+            return responseWithJpegBody(jpeg);
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             bus.emit('capture.failed', { error: message, at: Date.now() });
