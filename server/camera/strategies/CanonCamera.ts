@@ -378,15 +378,28 @@ export default class CanonCamera implements CameraStrategy {
         method: 'POST',
         signal: AbortSignal.timeout(70_000)
       });
+      const contentType = r.headers.get('content-type') || '';
       if (!r.ok) {
         const j = (await r.json().catch(() => ({}))) as { error?: string };
         throw new Error(j.error || `capture failed: ${r.status}`);
       }
-      const ct = r.headers.get('content-type') || 'image/jpeg';
+      if (contentType.includes('application/json')) {
+        const j = (await r.json()) as { ok?: boolean; imageBase64?: string; mimeType?: string; error?: string };
+        if (j.ok === false || !j.imageBase64) {
+          throw new Error(j.error || 'capture failed');
+        }
+        const data = Buffer.from(j.imageBase64, 'base64');
+        this.state = 'ready';
+        return {
+          mimeType: j.mimeType || 'image/jpeg',
+          data,
+          id: `canon-${Date.now()}`
+        };
+      }
       const data = Buffer.from(await r.arrayBuffer());
       this.state = 'ready';
       return {
-        mimeType: ct,
+        mimeType: contentType || 'image/jpeg',
         data,
         id: `canon-${Date.now()}`
       };
