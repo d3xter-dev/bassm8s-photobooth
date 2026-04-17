@@ -18,16 +18,8 @@ export default defineEventHandler(async () => {
   const id = captureResult.id ?? `capture-${Date.now()}`;
   logger.info('Captured photo', id);
 
-  /* Canon: bridge `session.capture()` already resumes live view in its `finally`. Do not stop/start here —
-   * unawaited calls raced the bridge and could crash EDSDK / Bun. Sony Wi‑Fi: refresh preview if needed. */
-  if (cam.type === 'sony_wifi') {
-    try {
-      await cam.stopLiveView();
-      await cam.startLiveView();
-    } catch {
-      /* ignore */
-    }
-  }
+  cam.stopLiveView();
+  cam.startLiveView();
 
   const watermarked = await sharp(captureResult.data)
     .composite([
