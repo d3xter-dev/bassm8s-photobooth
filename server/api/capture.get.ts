@@ -35,5 +35,5 @@ export default defineEventHandler(async () => {
   await saveCaptureOutputs(id, captureResult.data, watermarked);
   await enqueueTelegramUpload(id);
 
-  return captureResult.data.toString('base64');
+  return watermarked.toString('base64');
 });
