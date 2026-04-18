@@ -13,6 +13,53 @@ import { loggerCamera as logger, type TaggedLogger } from '~~/server/utils/logge
 
 const minVersionRequired = '2.0.0';
 
+/** Sony liveview: 8 common + 128 payload header (see Camera Remote API liveview spec). */
+const LIVEVIEW_PACKET_HEADER_SIZE = 8 + 128;
+/** Fixed start code in payload header (bytes 0–3 of the 128-byte payload header). */
+const LIVEVIEW_PAYLOAD_MAGIC = 0x24356879;
+const LIVEVIEW_MAX_JPEG_BYTES = 20 * 1024 * 1024;
+
+/**
+ * Drain complete liveview packets from an accumulated buffer. TCP may split frames
+ * arbitrarily; padding after JPEG or the next header may span chunk boundaries — the
+ * previous one-chunk-at-a-time parser misaligned and corrupted subsequent reads.
+ */
+function parseSonyLiveviewBuffer(
+    buffer: Buffer,
+    onJpeg: (jpeg: Buffer) => void,
+): Buffer {
+    let buf = buffer;
+    let guard = 0;
+    while (buf.length >= LIVEVIEW_PACKET_HEADER_SIZE && guard < 500_000) {
+        guard++;
+        if (buf[0] !== 0xff || buf[1] !== 0x01) {
+            buf = buf.subarray(1);
+            continue;
+        }
+        if (buf.readUInt32BE(8) !== LIVEVIEW_PAYLOAD_MAGIC) {
+            buf = buf.subarray(1);
+            continue;
+        }
+        const jpegSize = buf.readUIntBE(12, 3);
+        const paddingSize = buf.readUInt8(15);
+        if (jpegSize < 1 || jpegSize > LIVEVIEW_MAX_JPEG_BYTES) {
+            buf = buf.subarray(1);
+            continue;
+        }
+        const total = LIVEVIEW_PACKET_HEADER_SIZE + jpegSize + paddingSize;
+        if (buf.length < total) {
+            break;
+        }
+        const slice = buf.subarray(
+            LIVEVIEW_PACKET_HEADER_SIZE,
+            LIVEVIEW_PACKET_HEADER_SIZE + jpegSize,
+        );
+        onJpeg(Buffer.from(slice));
+        buf = buf.subarray(total);
+    }
+    return buf;
+}
+
 interface RpcRequest {
     id: number;
     version: string;
@@ -343,59 +390,19 @@ class SonyCamera extends EventEmitter implements CameraStrategy {
 
                 const liveviewUrl = new URL(output[0]);
 
-                const COMMON_HEADER_SIZE = 8;
-                const PAYLOAD_HEADER_SIZE = 128;
-                const JPEG_SIZE_POSITION = 4;
-                const PADDING_SIZE_POSITION = 7;
-
-                let jpegSize = 0;
-                let paddingSize = 0;
-                let bufferIndex = 0;
-
                 const liveviewReq = request(liveviewUrl, function (liveviewRes) {
-                    let imageBuffer = Buffer.alloc(0);
-                    let buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+                    let incoming: Buffer = Buffer.alloc(0);
 
                     liveviewRes.on('data', function (chunk: Buffer) {
-                        if (jpegSize === 0) {
-                            buffer = Buffer.concat([buffer, chunk]);
-
-                            if (buffer.length >= (COMMON_HEADER_SIZE + PAYLOAD_HEADER_SIZE)) {
-                                jpegSize =
-                                    buffer.readUInt8(COMMON_HEADER_SIZE + JPEG_SIZE_POSITION) * 65536 +
-                                    buffer.readUInt16BE(COMMON_HEADER_SIZE + JPEG_SIZE_POSITION + 1);
-
-                                imageBuffer = Buffer.alloc(jpegSize);
-
-                                paddingSize = buffer.readUInt8(COMMON_HEADER_SIZE + PADDING_SIZE_POSITION);
-
-                                buffer = buffer.subarray(COMMON_HEADER_SIZE + PAYLOAD_HEADER_SIZE);
-                                if (buffer.length > 0) {
-                                    const copyLength = Math.min(buffer.length, jpegSize);
-                                    buffer.copy(imageBuffer, bufferIndex, 0, copyLength);
-                                    bufferIndex += copyLength;
-                                    jpegSize -= copyLength;
-
-                                    if (jpegSize === 0) {
-                                        self.emit('liveviewJpeg', imageBuffer);
-                                        self.publishLiveViewFrame(imageBuffer);
-                                        buffer = buffer.subarray(copyLength + paddingSize);
-                                        bufferIndex = 0;
-                                    }
-                                }
-                            }
-                        } else {
-                            const copyLength = Math.min(chunk.length, jpegSize);
-                            chunk.copy(imageBuffer, bufferIndex, 0, copyLength);
-                            bufferIndex += copyLength;
-                            jpegSize -= copyLength;
-
-                            if (jpegSize === 0) {
-                                self.emit('liveviewJpeg', imageBuffer);
-                                self.publishLiveViewFrame(imageBuffer);
-                                buffer = chunk.subarray(copyLength + paddingSize);
-                                bufferIndex = 0;
-                            }
+                        try {
+                            incoming = Buffer.concat([incoming, chunk]) as Buffer;
+                            incoming = parseSonyLiveviewBuffer(incoming, (jpeg) => {
+                                self.emit('liveviewJpeg', jpeg);
+                                self.publishLiveViewFrame(jpeg);
+                            });
+                        } catch (e) {
+                            self.logger.error('Liveview parse error', e);
+                            incoming = Buffer.alloc(0);
                         }
                     });
 
