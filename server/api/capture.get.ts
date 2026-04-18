@@ -37,8 +37,9 @@ export default defineEventHandler(async () => {
     logger.warn('Telegram enqueue failed after capture (files saved on disk)', err);
   });
 
+  /** Preview URL points at saved `{id}.wm.jpg` — avoids huge JSON base64 payloads that can decode wrong in the browser. */
   return {
     id,
-    imageBase64: watermarked.toString('base64'),
+    previewUrl: `/api/captures/${encodeURIComponent(id)}/wm`,
   };
 });
