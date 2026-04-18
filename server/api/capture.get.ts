@@ -1,6 +1,6 @@
 import { context } from '~~/server/main';
-import sharp from 'sharp';
 import { loggerApiCapture as logger } from '~~/server/utils/logger';
+import { applyLogoWatermark } from '~~/server/utils/watermark';
 import { enqueueTelegramUpload, saveCaptureOutputs } from '~~/server/queue/telegram-queue';
 
 export default defineEventHandler(async () => {
@@ -12,8 +12,6 @@ export default defineEventHandler(async () => {
     });
   }
 
-  const watermark = (await useStorage('assets:assets').getItemRaw('BMD1_Logo.png')) as Buffer;
-
   const captureResult = await cam.capture();
   const id = captureResult.id ?? `capture-${Date.now()}`;
   logger.info('Captured photo', id);
@@ -21,19 +19,16 @@ export default defineEventHandler(async () => {
   cam.stopLiveView();
   cam.startLiveView();
 
-  const watermarked = await sharp(captureResult.data)
-    .composite([
-      {
-        input: watermark,
-        gravity: 'southwest',
-        left: 40,
-        top: 40,
-      },
-    ])
-    .toBuffer();
+  const watermarked = await applyLogoWatermark(captureResult.data);
 
   await saveCaptureOutputs(id, captureResult.data, watermarked);
-  await enqueueTelegramUpload(id);
 
-  return watermarked.toString('base64');
+  void enqueueTelegramUpload(id).catch((err) => {
+    logger.warn('Telegram enqueue failed after capture (files saved on disk)', err);
+  });
+
+  return {
+    id,
+    imageBase64: watermarked.toString('base64'),
+  };
 });

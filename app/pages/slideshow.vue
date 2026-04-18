@@ -5,10 +5,12 @@ const ROTATE_MS = 5000;
 
 const ids = ref<string[]>([]);
 const currentId = ref<string | undefined>();
+/** Bust browser cache when the active id changes (avoid stale 404 or old bitmap). */
+const imageCacheKey = ref(0);
 
 const currentSrc = computed(() =>
   currentId.value
-    ? `/api/captures/${encodeURIComponent(currentId.value)}/wm`
+    ? `/api/captures/${encodeURIComponent(currentId.value)}/wm?t=${imageCacheKey.value}`
     : undefined,
 );
 
@@ -25,6 +27,7 @@ function pickRandom() {
   }
   if (list.length === 1) {
     currentId.value = list[0];
+    imageCacheKey.value = Date.now();
     return;
   }
   let next = list[Math.floor(Math.random() * list.length)]!;
@@ -32,6 +35,7 @@ function pickRandom() {
     next = list[Math.floor(Math.random() * list.length)]!;
   }
   currentId.value = next;
+  imageCacheKey.value = Date.now();
 }
 
 onMounted(async () => {
