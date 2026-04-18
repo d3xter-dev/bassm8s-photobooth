@@ -131,8 +131,12 @@ const { start: startPreviewTimeout, stop: stopPreviewTimeout } = useTimeoutFn(()
   finalImage.value = undefined;
 }, 5000, { immediate: false });
 
-/** Max time to show the capture loading spinner before returning to live interaction. */
-const CAPTURE_LOADING_TIMEOUT_MS = 2000;
+/**
+ * Abort if capture does not finish within this window. Camera shutter + transfer + Sharp
+ * + disk often take several seconds; a short limit caused client abort → fetch errors
+ * like "data after connection close" and no preview image.
+ */
+const CAPTURE_LOADING_TIMEOUT_MS = 120_000;
 
 const finalImage = ref<string | undefined>();
 
@@ -159,12 +163,14 @@ const onCapture = async () => {
   }, CAPTURE_LOADING_TIMEOUT_MS);
 
   try {
-    const base64 = await $fetch<string>('/api/capture', { signal: controller.signal });
+    const data = await $fetch<{ id: string; imageBase64: string }>('/api/capture', {
+      signal: controller.signal,
+    });
     if (loadingTimeoutId !== undefined) {
       clearTimeout(loadingTimeoutId);
       loadingTimeoutId = undefined;
     }
-    finalImage.value = `data:image/jpeg;base64,${base64}`;
+    finalImage.value = `data:image/jpeg;base64,${data.imageBase64}`;
 
     stopPreviewTimeout();
     startPreviewTimeout();
