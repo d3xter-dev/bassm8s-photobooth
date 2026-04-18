@@ -1,5 +1,8 @@
 import { CameraType } from '../types';
 import { URL } from 'url';
+import net from 'node:net';
+import tls from 'node:tls';
+import type { Socket } from 'node:net';
 import { request, get, type ClientRequest } from 'http';
 import semver from 'semver';
 import { EventEmitter } from 'events';
@@ -60,6 +63,112 @@ function parseSonyLiveviewBuffer(
     return buf;
 }
 
+const HTTP_HEADER_LIMIT = 256 * 1024;
+
+/**
+ * First offset after `\r\n\r\n` in buf, or -1 if incomplete.
+ */
+function findHttpHeaderEnd(buf: Buffer): number {
+    for (let i = 0; i + 3 < buf.length; i++) {
+        if (buf[i] === 0x0d && buf[i + 1] === 0x0a && buf[i + 2] === 0x0d && buf[i + 3] === 0x0a) {
+            return i + 4;
+        }
+    }
+    return -1;
+}
+
+/**
+ * Sony liveview over HTTP: the body is a raw Sony packet stream. Node's `http.request`
+ * parses `Transfer-Encoding: chunked`; the first body byte is often 0xff (JPEG packet),
+ * which is not valid hex in a chunk-size line → "Parse Error: Invalid character in chunk size".
+ * We read the TCP/TLS stream ourselves after the header delimiter.
+ */
+function connectSonyLiveviewSocket(
+    liveviewUrl: URL,
+    onJpeg: (jpeg: Buffer) => void,
+    onStreamError: (e: Error) => void,
+    onStreamClosed: () => void,
+): Socket {
+    const host = liveviewUrl.hostname;
+    const isHttps = liveviewUrl.protocol === 'https:';
+    const port = liveviewUrl.port
+        ? parseInt(liveviewUrl.port, 10)
+        : isHttps
+          ? 443
+          : 80;
+    const pathWithQuery = `${liveviewUrl.pathname}${liveviewUrl.search}`;
+
+    const requestLine =
+        `GET ${pathWithQuery} HTTP/1.1\r\n` +
+        `Host: ${host}\r\n` +
+        'Connection: close\r\n' +
+        'Accept: */*\r\n' +
+        '\r\n';
+
+    const socket: Socket = isHttps
+        ? tls.connect({
+              host,
+              port,
+              rejectUnauthorized: false,
+          })
+        : net.connect({ host, port });
+
+    let headerBuf = Buffer.alloc(0);
+    let headersDone = false;
+    let incoming: Buffer = Buffer.alloc(0);
+
+    const writeRequest = () => {
+        socket.write(requestLine);
+    };
+
+    if (isHttps) {
+        socket.once('secureConnect', writeRequest);
+    } else {
+        socket.once('connect', writeRequest);
+    }
+
+    socket.on('data', (chunk: Buffer) => {
+        try {
+            if (!headersDone) {
+                headerBuf = Buffer.concat([headerBuf, chunk]);
+                if (headerBuf.length > HTTP_HEADER_LIMIT) {
+                    socket.destroy();
+                    onStreamError(new Error('Liveview: HTTP headers too large'));
+                    return;
+                }
+                const hEnd = findHttpHeaderEnd(headerBuf);
+                if (hEnd < 0) {
+                    return;
+                }
+
+                const headStr = headerBuf.subarray(0, hEnd).toString('latin1');
+                const statusLine0 = headStr.split('\r\n')[0] ?? '';
+                const statusMatch = statusLine0.match(/\s(\d{3})\b/);
+                const statusCode =
+                    statusMatch?.[1] != null ? parseInt(statusMatch[1], 10) : 0;
+                if (statusCode < 200 || statusCode >= 300) {
+                    socket.destroy();
+                    onStreamError(new Error(`Liveview: HTTP ${statusCode}`));
+                    return;
+                }
+
+                headersDone = true;
+                incoming = parseSonyLiveviewBuffer(headerBuf.subarray(hEnd), onJpeg);
+                headerBuf = Buffer.alloc(0);
+                return;
+            }
+
+            incoming = parseSonyLiveviewBuffer(Buffer.concat([incoming, chunk]), onJpeg);
+        } catch (e) {
+            onStreamError(e instanceof Error ? e : new Error(String(e)));
+        }
+    });
+
+    socket.on('error', onStreamError);
+    socket.on('close', onStreamClosed);
+    return socket;
+}
+
 interface RpcRequest {
     id: number;
     version: string;
@@ -90,7 +199,8 @@ class SonyCamera extends EventEmitter implements CameraStrategy {
     photosRemaining?: number;
     connecting?: boolean;
     eventPending?: boolean;
-    liveviewReq?: ClientRequest;
+    /** Raw TCP/TLS stream — see `connectSonyLiveviewSocket` (avoids HTTP chunked decode on Sony binary). */
+    liveviewSocket?: Socket;
     liveViewSubscribers: Set<LiveViewFrameHandler>;
     logger: TaggedLogger;
 
@@ -377,7 +487,7 @@ class SonyCamera extends EventEmitter implements CameraStrategy {
 
     startLiveView(): Promise<void> {
         const self = this;
-        if (this.liveviewReq) {
+        if (this.liveviewSocket) {
             return Promise.resolve();
         }
 
@@ -390,49 +500,33 @@ class SonyCamera extends EventEmitter implements CameraStrategy {
 
                 const liveviewUrl = new URL(output[0]);
 
-                const liveviewReq = request(liveviewUrl, function (liveviewRes) {
-                    let incoming: Buffer = Buffer.alloc(0);
-
-                    liveviewRes.on('data', function (chunk: Buffer) {
-                        try {
-                            incoming = Buffer.concat([incoming, chunk]) as Buffer;
-                            incoming = parseSonyLiveviewBuffer(incoming, (jpeg) => {
-                                self.emit('liveviewJpeg', jpeg);
-                                self.publishLiveViewFrame(jpeg);
-                            });
-                        } catch (e) {
-                            self.logger.error('Liveview parse error', e);
-                            incoming = Buffer.alloc(0);
-                        }
-                    });
-
-                    liveviewRes.on('end', function () {
-                        self.logger.info('Liveview stream ended');
-                    });
-
-                    liveviewRes.on('close', function () {
+                const sock = connectSonyLiveviewSocket(
+                    liveviewUrl,
+                    (jpeg) => {
+                        self.emit('liveviewJpeg', jpeg);
+                        self.publishLiveViewFrame(jpeg);
+                    },
+                    (e: Error) => {
+                        self.logger.error('Liveview stream error', e);
+                        self.liveviewSocket = undefined;
+                    },
+                    () => {
                         self.logger.info('Liveview stream closed');
-                        self.liveviewReq = undefined;
-                    });
-                });
+                        self.liveviewSocket = undefined;
+                    },
+                );
 
-                liveviewReq.on('error', function(e: Error) {
-                    self.logger.error('Liveview stream request error', e);
-                    self.liveviewReq = undefined;
-                });
-
-                self.liveviewReq = liveviewReq;
-                liveviewReq.end();
+                self.liveviewSocket = sock;
                 resolve();
             });
         });
     }
 
     async stopLiveView(): Promise<void> {
-        const activeReq = this.liveviewReq;
-        this.liveviewReq = undefined;
-        if (activeReq) {
-            activeReq.destroy();
+        const active = this.liveviewSocket;
+        this.liveviewSocket = undefined;
+        if (active) {
+            active.destroy();
         }
 
         await new Promise<void>((resolve, reject) => {
