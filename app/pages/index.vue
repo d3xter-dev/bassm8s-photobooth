@@ -163,14 +163,15 @@ const onCapture = async () => {
   }, CAPTURE_LOADING_TIMEOUT_MS);
 
   try {
-    const data = await $fetch<{ id: string; imageBase64: string }>('/api/capture', {
+    const data = await $fetch<{ id: string; previewUrl: string }>('/api/capture', {
       signal: controller.signal,
     });
     if (loadingTimeoutId !== undefined) {
       clearTimeout(loadingTimeoutId);
       loadingTimeoutId = undefined;
     }
-    finalImage.value = `data:image/jpeg;base64,${data.imageBase64}`;
+    /** Same watermarked file as slideshow/Telegram; query busts cache for the new file. */
+    finalImage.value = `${data.previewUrl}?t=${Date.now()}`;
 
     stopPreviewTimeout();
     startPreviewTimeout();
@@ -191,8 +192,13 @@ const onCapture = async () => {
 
 <template>
   <div class="relative w-full h-svh bg-black/5" @mousedown="onTriggerCountdown">
-    <canvas ref="canvasRef" class="w-full h-svh object-cover" />
-    <img v-if="finalImage" :src="finalImage" class="absolute inset-0 w-full h-svh object-cover" />
+    <canvas v-show="!finalImage" ref="canvasRef" class="w-full h-svh object-cover" />
+    <img
+      v-if="finalImage"
+      :src="finalImage"
+      class="absolute inset-0 z-10 w-full h-svh object-cover"
+      alt=""
+    />
     <div v-if="showCountdown || (takingPicture && finalImage == undefined)"
       class="flex justify-center items-center h-svh w-full absolute top-0 left-0 bg-black/20">
       <div class="flex gap-2 items-center w-full h-full justify-center">
