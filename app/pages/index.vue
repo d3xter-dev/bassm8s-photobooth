@@ -187,7 +187,6 @@ const onCapture = async () => {
   <div class="relative w-full h-svh bg-black/5" @mousedown="onTriggerCountdown">
     <canvas ref="canvasRef" class="w-full h-svh object-cover" />
     <img v-if="finalImage" :src="finalImage" class="absolute inset-0 w-full h-svh object-cover" />
-    <img src="/qr-code.svg" class="absolute left-0 bottom-0 w-64">
     <div v-if="showCountdown || (takingPicture && finalImage == undefined)"
       class="flex justify-center items-center h-svh w-full absolute top-0 left-0 bg-black/20">
       <div class="flex gap-2 items-center w-full h-full justify-center">
