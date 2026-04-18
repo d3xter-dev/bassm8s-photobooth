@@ -3,7 +3,7 @@ import { URL } from 'url';
 import net from 'node:net';
 import tls from 'node:tls';
 import type { Socket } from 'node:net';
-import { request, get, type ClientRequest } from 'http';
+import { request, type ClientRequest } from 'http';
 import semver from 'semver';
 import { EventEmitter } from 'events';
 import type {
@@ -542,7 +542,20 @@ class SonyCamera extends EventEmitter implements CameraStrategy {
 
     async capture(): Promise<CaptureResult> {
         const self = this;
-        if(this.status != "IDLE") {
+
+        if (this.liveviewSocket) {
+            try {
+                await this.stopLiveView();
+            } catch (e) {
+                this.logger.warn('SonyWifi: stopLiveView before capture failed', e);
+            }
+        }
+
+        /** getEvent updates `status` asynchronously after liveview stops — wait before actTakePicture. */
+        for (let i = 0; i < 50 && this.status !== 'IDLE'; i++) {
+            await new Promise((r) => setTimeout(r, 100));
+        }
+        if (this.status !== 'IDLE') {
             this.logger.warn("SonyWifi: camera busy, capture not available.  Status:", this.status);
             throw new Error('camera not ready');
         }
@@ -571,29 +584,22 @@ class SonyCamera extends EventEmitter implements CameraStrategy {
         const photoName = parts[parts.length - 1];
         this.logger.info("SonyWifi: Capture complete:", photoName);
 
-        const data = await new Promise<Buffer>((resolve, reject) => {
-            get(url, function(res) {
-                const statusCode = res.statusCode;
-                if (statusCode !== 200) {
-                    res.resume();
-                    reject(new Error(`Request Failed. Status Code: ${statusCode}`));
-                    return;
-                }
-
-                const rawData: Buffer[] = [];
-                res.on('data', function(chunk: Buffer) {
-                    rawData.push(chunk);
-                });
-                res.on('end', function() {
-                    self.logger.info("SonyWifi: Retrieved preview image:", photoName);
-                    resolve(Buffer.concat(rawData));
-                });
-            }).on('error', function(e: Error) {
-                reject(e);
-            });
-        });
+        let data: Buffer;
+        try {
+            const res = await fetch(url);
+            if (!res.ok) {
+                throw new Error(`Request Failed. Status Code: ${res.status}`);
+            }
+            const ab = await res.arrayBuffer();
+            data = Buffer.from(ab);
+            this.logger.info('SonyWifi: Retrieved preview image:', photoName);
+        } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            throw new Error(`SonyWifi: failed to download capture: ${message}`);
+        }
 
         this.state = 'ready';
+        this.ready = true;
 
         return {
             id: photoName,
