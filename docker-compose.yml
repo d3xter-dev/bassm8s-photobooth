@@ -1,0 +1,58 @@
+services:
+  # Isolated EDSDK process — Bun FFI can segfault on USB/IP; Docker restarts this service.
+  canon-bridge:
+    platform: linux/amd64
+    build:
+      context: .
+      platforms:
+        - linux/amd64
+    init: true
+    stop_signal: SIGTERM
+    stop_grace_period: 3s
+    entrypoint: ["/usr/local/bin/canon-bridge-entrypoint.sh"]
+    environment:
+      CANON_BRIDGE_PORT: 31337
+      CANON_HOST_DISK_PATH: /app/output
+      CANON_BRIDGE_SKIP_DISCONNECT_ON_EXIT: "1"
+      BUN_BIN: /usr/local/bin/bun
+    volumes:
+      - ./output:/app/output
+      - ./server:/app/server:ro
+      - ./server/vendor:/app/server/vendor:ro
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    privileged: true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:31337/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+
+  photobooth:
+    platform: linux/amd64
+    build:
+      context: .
+      platforms:
+        - linux/amd64
+    ports:
+      - "${PORT:-3000}:3000"
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+      BUN_BIN: /usr/local/bin/bun
+      CANON_HOST_DISK_PATH: /app/output
+      NUXT_CAMERA_TYPE: canon
+      NUXT_CAMERA_CANON_BRIDGE_URL: http://canon-bridge:31337
+      NUXT_CAMERA_CANON_BRIDGE_AUTOSTART: "false"
+    volumes:
+      - ./output:/app/output
+    depends_on:
+      canon-bridge:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 8s

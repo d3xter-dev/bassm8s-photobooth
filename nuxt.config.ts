@@ -49,6 +49,7 @@ export default defineNuxtConfig({
   },
 
   nitro: {
+    preset: 'bun',
     serverAssets: [{
       baseName: 'assets',
       dir: './assets'

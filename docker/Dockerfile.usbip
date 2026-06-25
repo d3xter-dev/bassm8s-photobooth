@@ -1,0 +1,12 @@
+FROM alpine:3.21
+
+RUN apk add --no-cache util-linux usbutils
+
+COPY scripts/usbip/attach-in-vm.sh /attach.sh
+RUN chmod +x /attach.sh
+
+# Require Canon (04a9) in the VM — root hubs alone are not enough.
+HEALTHCHECK --interval=5s --timeout=5s --start-period=30s --retries=60 \
+  CMD nsenter -t 1 -m -- sh -c 'lsusb | grep -qi 04a9'
+
+CMD ["/attach.sh"]

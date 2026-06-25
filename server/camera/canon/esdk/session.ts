@@ -13,9 +13,14 @@ import {
 } from './ffi';
 import {
   EDS_ERR_DEVICE_BUSY,
+  EDS_ERR_PTP_DEVICE_BUSY,
   EDS_ERR_OK,
   EDS_ERR_OBJECT_NOTREADY,
   EDS_ERR_INVALID_PARAMETER,
+  EDS_ERR_TAKE_PICTURE_CARD_NG,
+  EDS_ERR_TAKE_PICTURE_AF_NG,
+  describeEdsError,
+  isEdsBusyError,
   kEdsCameraCommand_PressShutterButton,
   kEdsCameraCommand_ShutterButton_Completely_NonAF,
   kEdsCameraCommand_ShutterButton_OFF,
@@ -33,6 +38,7 @@ import {
   kEdsPropID_Evf_Mode,
   kEdsPropID_Evf_OutputDevice,
   kEdsPropID_SaveTo,
+  kEdsSaveTo_Both,
   kEdsSaveTo_Host,
   kEdsStateEvent_All,
   kEdsStateEvent_Shutdown
@@ -104,19 +110,27 @@ export class EdsdkSession {
   }
 
   private getHostFreeBytes(): number {
+    const override = process.env.CANON_HOST_FREE_BYTES;
+    if (override) {
+      const n = Number(override);
+      if (Number.isFinite(n) && n > 0) {
+        return Math.min(n, Number.MAX_SAFE_INTEGER);
+      }
+    }
+
     const root = process.env.CANON_HOST_DISK_PATH ?? process.cwd();
     try {
       const s = statfsSync(root);
       const bsize = Number(s.bsize);
-      if (!Number.isFinite(bsize) || bsize <= 0) return 0;
+      if (!Number.isFinite(bsize) || bsize <= 0) return FALLBACK_FREE_BYTES;
       const rawBavail = (s as { bavail?: bigint | number }).bavail;
       const rawBfree = (s as { bfree?: bigint | number }).bfree;
       const bavail = rawBavail !== undefined ? Number(rawBavail) : NaN;
       const bfree = rawBfree !== undefined ? Number(rawBfree) : NaN;
       const blocks = Number.isFinite(bavail) && bavail >= 0 ? bavail : bfree;
-      if (!Number.isFinite(blocks) || blocks < 0) return 0;
+      if (!Number.isFinite(blocks) || blocks < 0) return FALLBACK_FREE_BYTES;
       const free = blocks * bsize;
-      if (!Number.isFinite(free) || free <= 0) return 0;
+      if (!Number.isFinite(free) || free <= 0) return FALLBACK_FREE_BYTES;
       return Math.min(free, Number.MAX_SAFE_INTEGER);
     } catch {
       return FALLBACK_FREE_BYTES;
@@ -167,9 +181,10 @@ export class EdsdkSession {
       writeU32(v, value);
       const err = e.EdsSetPropertyData(cam as never, propId >>> 0, 0, 4, ptr(v));
       if (err === EDS_ERR_OK) return;
-      if (err !== EDS_ERR_DEVICE_BUSY) {
-        throw new Error(`EdsSetPropertyData(${propId.toString(16)}) failed: 0x${err.toString(16)}`);
+      if (!isEdsBusyError(err)) {
+        throw new Error(`EdsSetPropertyData(${propId.toString(16)}) failed: ${describeEdsError(err)}`);
       }
+      this.pumpEdsEvents(8);
       await sleep(delayMs);
     }
     throw new Error(`EdsSetPropertyData(${propId.toString(16)}) failed: DEVICE_BUSY`);
@@ -187,9 +202,10 @@ export class EdsdkSession {
       const v = new Uint8Array(4);
       const err = e.EdsGetPropertyData(cam as never, propId >>> 0, 0, 4, ptr(v));
       if (err === EDS_ERR_OK) return readU32(v);
-      if (err !== EDS_ERR_DEVICE_BUSY) {
-        throw new Error(`EdsGetPropertyData(${propId.toString(16)}) failed: 0x${err.toString(16)}`);
+      if (!isEdsBusyError(err)) {
+        throw new Error(`EdsGetPropertyData(${propId.toString(16)}) failed: ${describeEdsError(err)}`);
       }
+      this.pumpEdsEvents(8);
       await sleep(delayMs);
     }
     throw new Error(`EdsGetPropertyData(${propId.toString(16)}) failed: DEVICE_BUSY`);
@@ -224,7 +240,7 @@ export class EdsdkSession {
     if (opts?.forceReset) this.capacityNotifyReset = true;
     const freeBytes = this.getHostFreeBytes();
     let clusters = Math.floor(freeBytes / HOST_BYTES_PER_SECTOR);
-    if (freeBytes > 0 && clusters === 0) clusters = 1;
+    if (clusters <= 0) clusters = Math.floor(FALLBACK_FREE_BYTES / HOST_BYTES_PER_SECTOR);
     if (clusters > 0x7fffffff) clusters = 0x7fffffff;
     const reset = this.capacityNotifyReset ? 1 : 0;
     this.capacityNotifyReset = false;
@@ -235,14 +251,15 @@ export class EdsdkSession {
     return e.EdsSetCapacity(cam as never, ptr(cap));
   }
 
-  private async edsSetHostCapacityWithBusyRetry(cam: number, maxAttempts = 35, opts?: { forceReset?: boolean }): Promise<number> {
+  private async edsSetHostCapacityWithBusyRetry(cam: number, maxAttempts = 80, opts?: { forceReset?: boolean }): Promise<number> {
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const err = this.edsSetHostCapacityRaw(cam, opts);
       if (err === EDS_ERR_OK) return err;
-      if (err !== EDS_ERR_DEVICE_BUSY) return err;
-      await sleep(10);
+      if (!isEdsBusyError(err)) return err;
+      this.pumpEdsEvents(12);
+      await sleep(15);
     }
-    return EDS_ERR_DEVICE_BUSY;
+    return EDS_ERR_PTP_DEVICE_BUSY;
   }
 
   private async setEdsHostCapacityOrThrow(cam: number): Promise<void> {
@@ -250,15 +267,66 @@ export class EdsdkSession {
     if (err !== EDS_ERR_OK) throw new Error(`EdsSetCapacity: 0x${err.toString(16)}`);
   }
 
-  private async takePictureWithBusyRetry(cam: number, maxAttempts = 45): Promise<number> {
+  private async prepareCaptureStorage(cam: number): Promise<void> {
+    await this.setU32PropDeviceBusyRetry(cam, kEdsPropID_SaveTo, kEdsSaveTo_Host, { maxAttempts: 120 }).catch(() => {});
+    const capErr = await this.edsSetHostCapacityWithBusyRetry(cam, 150, { forceReset: true });
+    if (capErr !== EDS_ERR_OK) throw new Error(`EdsSetCapacity: ${describeEdsError(capErr)}`);
+    this.pumpEdsEvents(48);
+    await sleep(60);
+  }
+
+  private async releaseShutterNonAf(cam: number): Promise<number> {
+    const e = this.ensureEds();
+    for (let attempt = 0; attempt < 50; attempt++) {
+      let err = e.EdsSendCommand(cam as never, kEdsCameraCommand_PressShutterButton, kEdsCameraCommand_ShutterButton_Completely_NonAF);
+      if (err === EDS_ERR_OK) {
+        this.pumpEdsEvents(16);
+        err = e.EdsSendCommand(cam as never, kEdsCameraCommand_PressShutterButton, kEdsCameraCommand_ShutterButton_OFF);
+        if (err === EDS_ERR_OK || isEdsBusyError(err)) return EDS_ERR_OK;
+      }
+      if (!isEdsBusyError(err)) return err;
+      this.pumpEdsEvents(12);
+      await sleep(15);
+    }
+    return EDS_ERR_PTP_DEVICE_BUSY;
+  }
+
+  /** TakePicture with photobooth fallbacks: non-AF shutter on AF failure, SaveTo_Both on card/PC-full. */
+  private async captureShotCommand(cam: number): Promise<number> {
+    let err = await this.takePictureWithBusyRetry(cam, 50);
+    if (err === EDS_ERR_OK) return err;
+
+    const code = err >>> 0;
+    if (code === (EDS_ERR_TAKE_PICTURE_AF_NG >>> 0)) {
+      return this.releaseShutterNonAf(cam);
+    }
+
+    if (code === (EDS_ERR_TAKE_PICTURE_CARD_NG >>> 0)) {
+      await this.setU32PropDeviceBusyRetry(cam, kEdsPropID_SaveTo, kEdsSaveTo_Both, { maxAttempts: 100 }).catch(() => {});
+      const capErr = await this.edsSetHostCapacityWithBusyRetry(cam, 150, { forceReset: true });
+      if (capErr !== EDS_ERR_OK) return capErr;
+      this.pumpEdsEvents(64);
+      await sleep(100);
+      err = await this.takePictureWithBusyRetry(cam, 50);
+      if (err === EDS_ERR_OK) return err;
+      if ((err >>> 0) === (EDS_ERR_TAKE_PICTURE_AF_NG >>> 0)) {
+        return this.releaseShutterNonAf(cam);
+      }
+    }
+
+    return err;
+  }
+
+  private async takePictureWithBusyRetry(cam: number, maxAttempts = 60): Promise<number> {
     const e = this.ensureEds();
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const err = e.EdsSendCommand(cam as never, kEdsCameraCommand_TakePicture, 0);
       if (err === EDS_ERR_OK) return err;
-      if (err !== EDS_ERR_DEVICE_BUSY) return err;
-      await sleep(12);
+      if (!isEdsBusyError(err)) return err;
+      this.pumpEdsEvents(12);
+      await sleep(15);
     }
-    return EDS_ERR_DEVICE_BUSY;
+    return EDS_ERR_PTP_DEVICE_BUSY;
   }
 
   private discardDirItemSync(dirItem: number): void {
@@ -314,7 +382,7 @@ export class EdsdkSession {
       const buf = Buffer.from(raw);
       e.EdsRelease(dlStream as never);
       try {
-        await this.edsSetHostCapacityWithBusyRetry(this.cameraRef);
+        await this.edsSetHostCapacityWithBusyRetry(this.cameraRef, 35, { forceReset: true });
       } catch {
         /* ignore */
       }
@@ -440,6 +508,7 @@ export class EdsdkSession {
     this.installCallbacks();
     await this.setU32PropDeviceBusyRetry(this.cameraRef, kEdsPropID_SaveTo, kEdsSaveTo_Host, { maxAttempts: 120 });
     await this.setEdsHostCapacityOrThrow(this.cameraRef);
+    this.pumpEdsEvents(32);
     this.bus.emit('camera.connected', { at: Date.now() });
   }
 
@@ -623,7 +692,7 @@ export class EdsdkSession {
       /* ignore */
     }
     const err = e.EdsDownloadEvfImage(this.cameraRef as never, this.evfRef as never);
-    if (err === EDS_ERR_OBJECT_NOTREADY || err === EDS_ERR_DEVICE_BUSY) {
+    if (err === EDS_ERR_OBJECT_NOTREADY || isEdsBusyError(err)) {
       return { transient: true };
     }
     if (err !== EDS_ERR_OK) {
@@ -662,11 +731,8 @@ export class EdsdkSession {
     const hadLiveView = this.hasLiveView;
     if (hadLiveView) {
       await this.stopLiveView('capture');
-      try {
-        await this.setU32PropDeviceBusyRetry(this.cameraRef, kEdsPropID_SaveTo, kEdsSaveTo_Host, { maxAttempts: 80 });
-      } catch {
-        /* ignore */
-      }
+      this.pumpEdsEvents(96);
+      await sleep(150);
     }
 
     return await new Promise<Buffer>((resolve, reject) => {
@@ -685,21 +751,18 @@ export class EdsdkSession {
         }
       };
       void (async () => {
-        const capErr = await this.edsSetHostCapacityWithBusyRetry(this.cameraRef, 35, { forceReset: true });
-        if (capErr !== EDS_ERR_OK) {
+        try {
+          await this.prepareCaptureStorage(this.cameraRef);
+          const err = await this.captureShotCommand(this.cameraRef);
+          if (err !== EDS_ERR_OK) {
+            this.captureWaiter = null;
+            reject(new Error(`TakePicture: ${describeEdsError(err)}`));
+          }
+        } catch (error) {
           this.captureWaiter = null;
-          reject(new Error(`EdsSetCapacity: 0x${capErr.toString(16)}`));
-          return;
+          reject(error instanceof Error ? error : new Error(String(error)));
         }
-        const err = await this.takePictureWithBusyRetry(this.cameraRef);
-        if (err !== EDS_ERR_OK) {
-          this.captureWaiter = null;
-          reject(new Error(`TakePicture: 0x${err.toString(16)}`));
-        }
-      })().catch((error) => {
-        this.captureWaiter = null;
-        reject(error instanceof Error ? error : new Error(String(error)));
-      });
+      })();
     }).finally(async () => {
       if (hadLiveView) {
         try {
@@ -720,8 +783,8 @@ export class EdsdkSession {
     const hadLiveView = this.hasLiveView;
     if (hadLiveView) await this.stopLiveView('capture_shutter');
     try {
-      const capErr = await this.edsSetHostCapacityWithBusyRetry(this.cameraRef, 35, { forceReset: true });
-      if (capErr !== EDS_ERR_OK) throw new Error(`EdsSetCapacity: 0x${capErr.toString(16)}`);
+      const capErr = await this.edsSetHostCapacityWithBusyRetry(this.cameraRef, 120, { forceReset: true });
+      if (capErr !== EDS_ERR_OK) throw new Error(`EdsSetCapacity: ${describeEdsError(capErr)}`);
       const e = this.ensureEds();
       let err = e.EdsSendCommand(this.cameraRef as never, kEdsCameraCommand_PressShutterButton, kEdsCameraCommand_ShutterButton_Completely_NonAF);
       if (err !== EDS_ERR_OK) throw new Error(`PressShutter: 0x${err.toString(16)}`);

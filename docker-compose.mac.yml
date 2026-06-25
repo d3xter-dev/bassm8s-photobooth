@@ -1,0 +1,32 @@
+# macOS overlay: USB/IP into Docker Desktop VM (see scripts/usbip/start-host.sh).
+# Usage:
+#   Terminal 1: ./scripts/usbip/start-host.sh
+#   Terminal 2: docker compose -f docker-compose.yml -f docker-compose.mac.yml up --build
+#
+# Linux production: docker compose up  (no mac overlay)
+
+services:
+  # Native arch (arm64 on Apple Silicon) — only attaches USB into the Docker VM.
+  usbip-attach:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.usbip
+    privileged: true
+    pid: host
+    restart: unless-stopped
+    environment:
+      USBIP_HOST: host.docker.internal
+      CANON_VID: "04a9"
+      # USBIP_BUS_ID: "0-4"
+
+  canon-bridge:
+    depends_on:
+      usbip-attach:
+        condition: service_healthy
+
+  photobooth:
+    depends_on:
+      usbip-attach:
+        condition: service_healthy
+      canon-bridge:
+        condition: service_healthy

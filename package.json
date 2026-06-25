@@ -8,7 +8,10 @@
     "generate": "nuxt generate",
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare",
-    "canon-bridge": "bun server/camera/canon/canon-bridge.ts"
+    "canon-bridge": "bun server/camera/canon/canon-bridge.ts",
+    "usbip:host": "./scripts/usbip/start-host.sh",
+    "docker:mac": "docker compose -f docker-compose.yml -f docker-compose.mac.yml up -d --build",
+    "docker:linux": "docker compose up -d --build"
   },
   "dependencies": {
     "@nuxt/eslint": "1.2.0",

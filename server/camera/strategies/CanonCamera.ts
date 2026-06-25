@@ -11,6 +11,7 @@ import type {
 import {
   isCanonBridgeReachable,
   spawnCanonBridge,
+  stopCanonBridgeProcess,
   waitForBridgeHealth
 } from '~~/server/camera/canon/spawn-bridge';
 import { loggerCamera as logger, type TaggedLogger } from '~~/server/utils/logger';
@@ -257,6 +258,16 @@ export default class CanonCamera implements CameraStrategy {
     }
   }
 
+  private wireBridgeChildMonitor(child: ChildProcess): void {
+    child.on('exit', (code, signal) => {
+      if (this.bridgeChildProcess !== child) return;
+      this.bridgeChildProcess = null;
+      if (code === 0 && !signal) return;
+      this.logger.error({ code, signal }, 'Canon bridge process crashed (Bun FFI / EDSDK)');
+      this.handleBridgeCameraLost(signal ? `signal_${signal}` : `exit_${code ?? 'unknown'}`);
+    });
+  }
+
   async connect(): Promise<void> {
     if (this.connectInFlight) {
       await this.connectInFlight;
@@ -276,6 +287,7 @@ export default class CanonCamera implements CameraStrategy {
           } else {
             const p = this.bridgePortForSpawn();
             this.bridgeChildProcess = spawnCanonBridge(p);
+            this.wireBridgeChildMonitor(this.bridgeChildProcess);
             await waitForBridgeHealth(this.bridgeBase, 20000);
             this.logger.info({ base: this.bridgeBase }, 'Canon EDSDK Bun bridge started');
           }
@@ -294,14 +306,9 @@ export default class CanonCamera implements CameraStrategy {
         this.state = 'ready';
       } catch (e) {
         this.state = 'error';
-        if (this.bridgeChildProcess) {
-          try {
-            this.bridgeChildProcess.kill('SIGTERM');
-          } catch {
-            /* ignore */
-          }
-          this.bridgeChildProcess = null;
-        }
+        const child = this.bridgeChildProcess;
+        this.bridgeChildProcess = null;
+        await stopCanonBridgeProcess(child);
         throw e;
       } finally {
         this.connectInFlight = null;
@@ -326,14 +333,9 @@ export default class CanonCamera implements CameraStrategy {
     } catch {
       /* ignore — bridge may already be gone */
     } finally {
-      if (this.bridgeChildProcess) {
-        try {
-          this.bridgeChildProcess.kill('SIGTERM');
-        } catch {
-          /* ignore */
-        }
-        this.bridgeChildProcess = null;
-      }
+      const child = this.bridgeChildProcess;
+      this.bridgeChildProcess = null;
+      await stopCanonBridgeProcess(child);
     }
   }
 
@@ -369,14 +371,28 @@ export default class CanonCamera implements CameraStrategy {
     };
   }
 
+  private isRemoteBridge(): boolean {
+    try {
+      const h = new URL(this.bridgeBase).hostname;
+      return h !== '127.0.0.1' && h !== 'localhost' && h !== '[::1]' && h !== '::1';
+    } catch {
+      return false;
+    }
+  }
+
   async capture(): Promise<CaptureResult> {
     if (this.state !== 'ready') {
       throw new Error('camera not ready');
     }
     this.state = 'busy';
     try {
+      const headers: Record<string, string> = {};
+      if (this.isRemoteBridge()) {
+        headers['X-Canon-Capture-Delivery'] = 'inline';
+      }
       const r = await fetch(new URL('/capture', this.bridgeBase).toString(), {
         method: 'POST',
+        headers,
         signal: AbortSignal.timeout(70_000)
       });
       const contentType = r.headers.get('content-type') || '';

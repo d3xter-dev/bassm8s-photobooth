@@ -5,6 +5,26 @@ import { dirname, join } from 'node:path';
 
 const RELATIVE_BRIDGE = join('server', 'camera', 'canon', 'canon-bridge.ts');
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function killProcessTree(pid: number, signal: NodeJS.Signals): void {
+  if (process.platform === 'win32') {
+    process.kill(pid, signal);
+    return;
+  }
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      /* already dead */
+    }
+  }
+}
+
 /**
  * Nitro bundles server code under `.nuxt/dev/` (or `.output/`).
  * Prefer `process.cwd()`, then walk up from this module until `server/camera/canon/canon-bridge.ts` exists.
@@ -38,11 +58,46 @@ export function getCanonBridgeScriptPath(): string {
 
 export function spawnCanonBridge(port: number, bunBin = process.env.BUN_BIN || 'bun'): ChildProcess {
   const script = getCanonBridgeScriptPath();
-  return spawn(bunBin, [script], {
+  const child = spawn(bunBin, [script], {
     env: { ...process.env, CANON_BRIDGE_PORT: String(port) },
     stdio: 'inherit',
-    detached: false
+    // Own process group on Unix so SIGTERM from Docker reaches the whole bridge tree.
+    detached: process.platform !== 'win32'
   });
+  if (process.platform !== 'win32') {
+    child.unref();
+  }
+  return child;
+}
+
+/** Stop a spawned canon-bridge (SIGTERM → SIGKILL). Safe if already exited. */
+export async function stopCanonBridgeProcess(child: ChildProcess | null, graceMs = 2500): Promise<void> {
+  const pid = child?.pid;
+  if (!pid) return;
+
+  try {
+    killProcessTree(pid, 'SIGTERM');
+  } catch {
+    return;
+  }
+
+  const exited = new Promise<void>((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolve();
+      return;
+    }
+    child.once('exit', () => resolve());
+  });
+
+  await Promise.race([exited, sleep(graceMs)]);
+
+  if (child.exitCode !== null || child.signalCode !== null) return;
+
+  try {
+    killProcessTree(pid, 'SIGKILL');
+  } catch {
+    /* ignore */
+  }
 }
 
 /** True if the bridge HTTP server is already up (e.g. previous dev session or manual bridge process). */

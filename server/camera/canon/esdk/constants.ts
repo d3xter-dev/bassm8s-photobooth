@@ -16,11 +16,37 @@ export const EDS_ERR_INVALID_PARAMETER = 0x0000_0002 as const;
 /** Camera busy — retry after `EdsGetEvent` */
 export const EDS_ERR_DEVICE_BUSY = 0x0000_0081 as const;
 
+/** PTP layer busy (common when stopping live view before capture) */
+export const EDS_ERR_PTP_DEVICE_BUSY = 0x0000_2019 as const;
+
 /** PTP vendor: EVF / object not ready — expect when polling live view before frame is ready */
 export const EDS_ERR_OBJECT_NOTREADY = 0x0000_a102 as const;
 
 /** Often fixed by `EdsSetCapacity` when using `kEdsSaveTo_Host` */
 export const EDS_ERR_TAKE_PICTURE_CARD_NG = 0x0000_8d07 as const;
+export const EDS_ERR_TAKE_PICTURE_CARD_PROTECT_NG = 0x0000_8d08 as const;
+/** Autofocus failed — use non-AF shutter release for photobooth */
+export const EDS_ERR_TAKE_PICTURE_AF_NG = 0x0000_8d01 as const;
+
+const EDS_ERROR_HINTS: Record<number, string> = {
+  [EDS_ERR_DEVICE_BUSY]: 'Camera busy — retrying.',
+  [EDS_ERR_PTP_DEVICE_BUSY]: 'Camera busy (PTP) — wait for live view to finish stopping.',
+  [EDS_ERR_TAKE_PICTURE_AF_NG]: 'Autofocus failed — retrying with non-AF shutter release.',
+  [EDS_ERR_TAKE_PICTURE_CARD_NG]:
+    'Camera refused capture — host storage looks full to the body ("PC Full"). Reconnect after fixing CANON_HOST_DISK_PATH / disk space, or enable "Release shutter without card".',
+  [EDS_ERR_TAKE_PICTURE_CARD_PROTECT_NG]: 'SD card is write-protected.',
+};
+
+export function describeEdsError(code: number): string {
+  const hex = `0x${(code >>> 0).toString(16)}`;
+  const hint = EDS_ERROR_HINTS[code >>> 0];
+  return hint ? `${hex}: ${hint}` : hex;
+}
+
+export function isEdsBusyError(code: number): boolean {
+  const c = code >>> 0;
+  return c === (EDS_ERR_DEVICE_BUSY >>> 0) || c === (EDS_ERR_PTP_DEVICE_BUSY >>> 0);
+}
 
 /* --- kEdsPropID_* (EDSDKTypes.h) --- */
 export const kEdsPropID_SaveTo = 0x0000_000b;

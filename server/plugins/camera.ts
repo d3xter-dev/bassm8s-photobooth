@@ -4,16 +4,19 @@ import { context } from '~~/server/main';
 import { loggerPluginCamera as logger } from '~~/server/utils/logger';
 
 let shutdownInFlight: Promise<void> | null = null;
+let shuttingDown = false;
 
 async function initializeCameraWithBackoff(cam: CameraStrategy): Promise<void> {
   let delay = 300;
   const maxDelay = 8_000;
-  while (cam.getState() !== 'ready') {
+  while (!shuttingDown && cam.getState() !== 'ready') {
     try {
       await cam.connect();
+      if (shuttingDown) return;
       await cam.startLiveView();
       return;
     } catch (err) {
+      if (shuttingDown) return;
       logger.error('Failed to initialize camera strategy', err);
       await new Promise((resolve) => setTimeout(resolve, delay));
       delay = Math.min(maxDelay, Math.floor(delay * 1.8));
@@ -22,10 +25,14 @@ async function initializeCameraWithBackoff(cam: CameraStrategy): Promise<void> {
 }
 
 async function shutdownCameraOnHostExit(cam: CameraStrategy): Promise<void> {
+  shuttingDown = true;
   if (!shutdownInFlight) {
     shutdownInFlight = (async () => {
       try {
-        await cam.disconnect();
+        await Promise.race([
+          cam.disconnect(),
+          new Promise<void>((resolve) => setTimeout(resolve, 5000))
+        ]);
       } catch (error) {
         logger.warn('Camera shutdown on host exit failed', error);
       } finally {

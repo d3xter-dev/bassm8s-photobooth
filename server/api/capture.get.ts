@@ -3,7 +3,14 @@ import { loggerApiCapture as logger } from '~~/server/utils/logger';
 import { applyLogoWatermark } from '~~/server/utils/watermark';
 import { enqueueTelegramUpload, saveCaptureOutputs } from '~~/server/queue/telegram-queue';
 
+let captureInFlight: Promise<{ id: string; previewUrl: string }> | null = null;
+
 export default defineEventHandler(async () => {
+  if (captureInFlight) {
+    throw createError({ statusCode: 409, statusMessage: 'Capture already in progress' });
+  }
+
+  captureInFlight = (async () => {
   const cam = context.camera.cam;
   if (!cam) {
     throw createError({
@@ -12,21 +19,27 @@ export default defineEventHandler(async () => {
     });
   }
 
-  /** Sony (and similar) cannot shoot while liveview is active — status stays non-IDLE and capture throws "camera not ready". */
-  try {
-    await cam.stopLiveView();
-  } catch (err) {
-    logger.warn('stopLiveView before capture failed', err);
+  const isCanon = cam.type === 'canon';
+
+  /** Sony needs an explicit stop; Canon bridge handles liveview inside /capture. */
+  if (!isCanon) {
+    try {
+      await cam.stopLiveView();
+    } catch (err) {
+      logger.warn('stopLiveView before capture failed', err);
+    }
   }
 
   const captureResult = await cam.capture();
   const id = captureResult.id ?? `capture-${Date.now()}`;
   logger.info('Captured photo', id);
 
-  try {
-    await cam.startLiveView();
-  } catch (err) {
-    logger.warn('startLiveView after capture failed', err);
+  if (!isCanon) {
+    try {
+      await cam.startLiveView();
+    } catch (err) {
+      logger.warn('startLiveView after capture failed', err);
+    }
   }
 
   const watermarked = await applyLogoWatermark(captureResult.data);
@@ -37,9 +50,15 @@ export default defineEventHandler(async () => {
     logger.warn('Telegram enqueue failed after capture (files saved on disk)', err);
   });
 
-  /** Preview URL points at saved `{id}.wm.jpg` — avoids huge JSON base64 payloads that can decode wrong in the browser. */
   return {
     id,
     previewUrl: `/api/captures/${encodeURIComponent(id)}/wm`,
   };
+  })();
+
+  try {
+    return await captureInFlight;
+  } finally {
+    captureInFlight = null;
+  }
 });

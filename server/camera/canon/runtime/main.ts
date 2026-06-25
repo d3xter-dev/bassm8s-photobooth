@@ -1,6 +1,6 @@
 /// <reference types="bun" />
 import { randomBytes } from 'node:crypto';
-import { writeFile, unlink } from 'node:fs/promises';
+import { mkdir, writeFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { CommandQueue } from '../core/command-queue';
@@ -20,6 +20,19 @@ type ConnectBody = {
   edsdkMacosDylibPath?: string;
   vendorRoot?: string;
 };
+
+function captureStagingDir(): string {
+  const hostDisk = process.env.CANON_HOST_DISK_PATH?.trim();
+  if (hostDisk) {
+    return join(hostDisk, '.canon-bridge-staging');
+  }
+  return tmpdir();
+}
+
+function wantsInlineCapture(req: Request): boolean {
+  const h = req.headers.get('x-canon-capture-delivery');
+  return h === 'inline' || h === 'binary';
+}
 
 export function startCanonBridgeServer(): void {
   const port = Number(process.env.CANON_BRIDGE_PORT || 31337);
@@ -130,6 +143,7 @@ export function startCanonBridgeServer(): void {
 
   function startMainLoop(): void {
     if (mainLoopTimer) return;
+    const intervalMs = Math.max(4, Number(process.env.CANON_BRIDGE_EVENT_INTERVAL_MS || 8));
     mainLoopTimer = setInterval(() => {
       session.getEvent();
       if (pendingFrame) {
@@ -149,7 +163,7 @@ export function startCanonBridgeServer(): void {
           broadcastText(payload);
         }
       }
-    }, 1);
+    }, intervalMs);
   }
 
   function health(): BridgeHealth {
@@ -200,7 +214,7 @@ export function startCanonBridgeServer(): void {
     if (session.isConnected) state = 'connected';
   }
 
-  Bun.serve({
+  const server = Bun.serve({
     port,
     fetch(req, server) {
       const url = new URL(req.url);
@@ -269,9 +283,16 @@ export function startCanonBridgeServer(): void {
               return await session.capture();
             }, { timeoutMs: 70_000, label: 'capture' });
             bus.emit('capture.completed', { bytes: jpeg.length, at: Date.now() });
-            /* Write to disk and return path — avoids Bun binary Response + large base64 in JSON (Linux crashes). */
+            if (wantsInlineCapture(req)) {
+              return new Response(new Uint8Array(jpeg), {
+                headers: { 'Content-Type': 'image/jpeg', 'Content-Length': String(jpeg.length) }
+              });
+            }
+            /* Shared volume path when CANON_HOST_DISK_PATH is set (Docker split services). */
+            const stagingDir = captureStagingDir();
+            await mkdir(stagingDir, { recursive: true });
             const outPath = join(
-              tmpdir(),
+              stagingDir,
               `bassm8s-canon-${Date.now()}-${randomBytes(8).toString('hex')}.jpg`
             );
             try {
@@ -320,6 +341,47 @@ export function startCanonBridgeServer(): void {
         /* no-op */
       }
     }
+  });
+
+  let shutdownStarted = false;
+  async function shutdownBridge(signal: string): Promise<void> {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    console.log(`[canon-bridge] ${signal} — shutting down`);
+    reconnect.stop();
+    desiredLiveView = false;
+    liveview.stop('shutdown');
+    if (mainLoopTimer) {
+      clearInterval(mainLoopTimer);
+      mainLoopTimer = null;
+    }
+    state = 'closed';
+    try {
+      server.stop(true);
+    } catch {
+      /* ignore */
+    }
+    // Skip EdsTerminateSession / USB teardown — sync FFI can hang and block container stop.
+    if (process.env.CANON_BRIDGE_SKIP_DISCONNECT_ON_EXIT !== '0') {
+      setTimeout(() => process.exit(0), 50).unref();
+      return;
+    }
+    try {
+      await Promise.race([
+        disconnect('signal'),
+        new Promise<void>((resolve) => setTimeout(resolve, 2000))
+      ]);
+    } catch {
+      /* ignore */
+    }
+    setTimeout(() => process.exit(0), 100).unref();
+  }
+
+  process.on('SIGTERM', () => {
+    void shutdownBridge('SIGTERM');
+  });
+  process.on('SIGINT', () => {
+    void shutdownBridge('SIGINT');
   });
 
   startMainLoop();
