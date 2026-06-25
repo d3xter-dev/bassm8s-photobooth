@@ -24,3 +24,6 @@ logs
 !.env.example
 
 output/*
+
+# Canon EDSDK binaries (not redistributable — obtain locally)
+server/vendor/
