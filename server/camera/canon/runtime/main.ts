@@ -10,6 +10,7 @@ import { ReconnectWorker } from '../workers/reconnect-worker';
 import { LiveViewWorker } from '../workers/liveview-worker';
 import { EdsdkSession } from '../esdk/session';
 import type { BridgeHealth, BridgeState } from '../core/types';
+import { isCanonUsbPresent, startUsbWatchdog } from './usb-watchdog';
 
 if (typeof Bun === 'undefined') {
   throw new Error('canon-bridge must run with Bun (requires bun:ffi)');
@@ -143,7 +144,7 @@ export function startCanonBridgeServer(): void {
 
   function startMainLoop(): void {
     if (mainLoopTimer) return;
-    const intervalMs = Math.max(4, Number(process.env.CANON_BRIDGE_EVENT_INTERVAL_MS || 8));
+    const intervalMs = Math.max(8, Number(process.env.CANON_BRIDGE_EVENT_INTERVAL_MS || 20));
     mainLoopTimer = setInterval(() => {
       session.getEvent();
       if (pendingFrame) {
@@ -167,12 +168,15 @@ export function startCanonBridgeServer(): void {
   }
 
   function health(): BridgeHealth {
+    const usbPresent = isCanonUsbPresent();
+    const usbOk = usbPresent !== false;
     return {
-      ok: true,
+      ok: state !== 'closed' && usbOk,
       state,
       eds: session.hasEds,
       camera: session.isConnected,
       liveView: liveview.isRunning && session.hasLiveView,
+      usbPresent,
       queueDepth: queue.depth(),
       reconnecting: reconnect.isRunning,
       metrics: metrics.snapshot()
@@ -382,6 +386,12 @@ export function startCanonBridgeServer(): void {
   });
   process.on('SIGINT', () => {
     void shutdownBridge('SIGINT');
+  });
+
+  startUsbWatchdog({
+    onUsbLost: () => {
+      process.exit(1);
+    }
   });
 
   startMainLoop();

@@ -14,6 +14,7 @@ import {
   stopCanonBridgeProcess,
   waitForBridgeHealth
 } from '~~/server/camera/canon/spawn-bridge';
+import { briefCameraConnectError } from '~~/server/camera/canon/connection-errors';
 import { loggerCamera as logger, type TaggedLogger } from '~~/server/utils/logger';
 import WebSocket, { type RawData } from 'ws';
 
@@ -42,6 +43,14 @@ export default class CanonCamera implements CameraStrategy {
   private liveViewStarted = false;
   private reconnectInFlight = false;
   private connectInFlight: Promise<void> | null = null;
+  private lastReconnectLogAt = 0;
+
+  private logReconnectRetry(err: unknown): void {
+    const now = Date.now();
+    if (now - this.lastReconnectLogAt < 12_000) return;
+    this.lastReconnectLogAt = now;
+    this.logger.info(`Canon: ${briefCameraConnectError(err)}`);
+  }
 
   constructor() {
     this.logger = logger;
@@ -182,12 +191,16 @@ export default class CanonCamera implements CameraStrategy {
         this.handleBridgeCameraLost(msg.reason ?? 'unknown');
       }
     });
-    ws.on('error', (e) => {
-      this.logger.warn('Canon bridge WebSocket error', e);
+    ws.on('error', () => {
+      this.logger.debug('Canon bridge WebSocket error');
     });
     ws.on('close', () => {
       if (this.cameraBridgeWs !== ws) return;
       this.cameraBridgeWs = null;
+      if (this.isRemoteBridge() && this.state !== 'disconnected') {
+        this.handleBridgeCameraLost('bridge_ws_closed');
+        return;
+      }
       if (this.liveViewStarted && this.liveViewSubscribers.size > 0) {
         setTimeout(() => {
           if (this.liveViewStarted && this.liveViewSubscribers.size > 0) {
@@ -217,7 +230,7 @@ export default class CanonCamera implements CameraStrategy {
     if (this.state === 'disconnected') return;
     if (this.reconnectInFlight) return;
     this.reconnectInFlight = true;
-    this.logger.warn({ reason }, 'Canon bridge reported camera lost');
+    this.logger.info('Canon: connection lost, reconnecting...');
     this.liveViewStarted = false;
     if (this.cameraBridgeWs) {
       try {
@@ -233,8 +246,7 @@ export default class CanonCamera implements CameraStrategy {
     });
   }
 
-  private async runReconnectLoop(reason: string): Promise<void> {
-    this.logger.info({ reason }, 'Canon: attempting reconnect after camera loss');
+  private async runReconnectLoop(_reason: string): Promise<void> {
     let delay = 500;
     const maxDelay = 10_000;
     while (true) {
@@ -247,12 +259,13 @@ export default class CanonCamera implements CameraStrategy {
           try {
             await this.startLiveView();
           } catch (e) {
-            this.logger.warn({ err: e }, 'Canon reconnect: startLiveView failed (non-fatal)');
+            this.logReconnectRetry(e);
           }
         }
+        this.logger.info('Canon: reconnected');
         return;
       } catch (e) {
-        this.logger.warn({ err: e }, 'Canon reconnect attempt failed');
+        this.logReconnectRetry(e);
         delay = Math.min(delay * 2, maxDelay);
       }
     }
@@ -297,11 +310,7 @@ export default class CanonCamera implements CameraStrategy {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           timeoutMs: 30_000,
-          body: JSON.stringify({
-            cameraIndex: this.cameraIndex,
-            ...(this.edsdkMacosDylibPath ? { edsdkMacosDylibPath: this.edsdkMacosDylibPath } : {}),
-            ...(this.edsdkVendorRoot ? { vendorRoot: this.edsdkVendorRoot } : {})
-          })
+          body: JSON.stringify(this.connectBody())
         })
         this.state = 'ready';
       } catch (e) {
@@ -380,71 +389,126 @@ export default class CanonCamera implements CameraStrategy {
     }
   }
 
+  private isBridgeUnreachableError(err: unknown): boolean {
+    if (!(err instanceof Error)) return false;
+    const msg = err.message.toLowerCase();
+    const code = (err as NodeJS.ErrnoException).code?.toLowerCase();
+    return (
+      code === 'econnrefused' ||
+      code === 'connectionrefused' ||
+      msg.includes('unable to connect') ||
+      msg.includes('connection refused') ||
+      msg.includes('fetch failed') ||
+      msg.includes('bridge health check timed out')
+    );
+  }
+
+  private connectBody(): Record<string, unknown> {
+    return {
+      cameraIndex: this.cameraIndex,
+      ...(this.edsdkMacosDylibPath ? { edsdkMacosDylibPath: this.edsdkMacosDylibPath } : {}),
+      ...(this.edsdkVendorRoot ? { vendorRoot: this.edsdkVendorRoot } : {})
+    };
+  }
+
+  private async recoverRemoteBridge(): Promise<void> {
+    this.liveViewStarted = false;
+    if (this.cameraBridgeWs) {
+      try {
+        this.cameraBridgeWs.close();
+      } catch {
+        /* ignore */
+      }
+      this.cameraBridgeWs = null;
+    }
+    this.state = 'connecting';
+    this.logger.warn('Canon bridge unreachable — waiting for USB/IP + supervisor');
+    await waitForBridgeHealth(this.bridgeBase, 90_000);
+    await this.fetchJson('/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      timeoutMs: 30_000,
+      body: JSON.stringify(this.connectBody())
+    });
+    this.state = 'ready';
+    if (this.liveViewSubscribers.size > 0) {
+      try {
+        await this.startLiveView();
+      } catch (e) {
+        this.logger.warn({ err: e }, 'Canon recover: startLiveView failed (non-fatal)');
+      }
+    }
+  }
+
   async capture(): Promise<CaptureResult> {
     if (this.state !== 'ready') {
       throw new Error('camera not ready');
     }
     this.state = 'busy';
     try {
-      const headers: Record<string, string> = {};
-      if (this.isRemoteBridge()) {
-        headers['X-Canon-Capture-Delivery'] = 'inline';
-      }
-      const r = await fetch(new URL('/capture', this.bridgeBase).toString(), {
-        method: 'POST',
-        headers,
-        signal: AbortSignal.timeout(70_000)
-      });
-      const contentType = r.headers.get('content-type') || '';
-      if (!r.ok) {
-        const j = (await r.json().catch(() => ({}))) as { error?: string };
-        throw new Error(j.error || `capture failed: ${r.status}`);
-      }
-      if (contentType.includes('application/json')) {
-        const j = (await r.json()) as {
-          ok?: boolean;
-          path?: string;
-          imageBase64?: string;
-          mimeType?: string;
-          error?: string;
-        };
-        if (j.ok === false) {
-          throw new Error(j.error || 'capture failed');
+      try {
+        return await this.captureOnce();
+      } catch (e) {
+        if (this.isRemoteBridge() && this.isBridgeUnreachableError(e)) {
+          await this.recoverRemoteBridge();
+          return await this.captureOnce();
         }
-        if (j.path && typeof j.path === 'string') {
-          try {
-            const data = await readFile(j.path);
-            this.state = 'ready';
-            return {
-              mimeType: j.mimeType || 'image/jpeg',
-              data,
-              id: `canon-${Date.now()}`
-            };
-          } finally {
-            await unlink(j.path).catch(() => {});
-          }
-        }
-        if (j.imageBase64) {
-          const data = Buffer.from(j.imageBase64, 'base64');
-          this.state = 'ready';
+        throw e;
+      }
+    } finally {
+      this.state = 'ready';
+    }
+  }
+
+  /** POST /capture — uses shared-volume path for remote bridge (both containers mount output). */
+  private async captureOnce(): Promise<CaptureResult> {
+    const r = await fetch(new URL('/capture', this.bridgeBase).toString(), {
+      method: 'POST',
+      signal: AbortSignal.timeout(70_000)
+    });
+    const contentType = r.headers.get('content-type') || '';
+    if (!r.ok) {
+      const j = (await r.json().catch(() => ({}))) as { error?: string };
+      throw new Error(j.error || `capture failed: ${r.status}`);
+    }
+    if (contentType.includes('application/json')) {
+      const j = (await r.json()) as {
+        ok?: boolean;
+        path?: string;
+        imageBase64?: string;
+        mimeType?: string;
+        error?: string;
+      };
+      if (j.ok === false) {
+        throw new Error(j.error || 'capture failed');
+      }
+      if (j.path && typeof j.path === 'string') {
+        try {
+          const data = await readFile(j.path);
           return {
             mimeType: j.mimeType || 'image/jpeg',
             data,
             id: `canon-${Date.now()}`
           };
+        } finally {
+          await unlink(j.path).catch(() => {});
         }
-        throw new Error(j.error || 'capture failed: no path or imageBase64');
       }
-      const data = Buffer.from(await r.arrayBuffer());
-      this.state = 'ready';
-      return {
-        mimeType: contentType || 'image/jpeg',
-        data,
-        id: `canon-${Date.now()}`
-      };
-    } catch (e) {
-      this.state = 'ready';
-      throw e;
+      if (j.imageBase64) {
+        const data = Buffer.from(j.imageBase64, 'base64');
+        return {
+          mimeType: j.mimeType || 'image/jpeg',
+          data,
+          id: `canon-${Date.now()}`
+        };
+      }
+      throw new Error(j.error || 'capture failed: no path or imageBase64');
     }
+    const data = Buffer.from(await r.arrayBuffer());
+    return {
+      mimeType: contentType || 'image/jpeg',
+      data,
+      id: `canon-${Date.now()}`
+    };
   }
 }

@@ -1,10 +1,12 @@
 import type { CameraStrategy, CameraType } from '~~/server/camera/types';
 import { createCamera } from '~~/server/camera';
+import { briefCameraConnectError } from '~~/server/camera/canon/connection-errors';
 import { context } from '~~/server/main';
 import { loggerPluginCamera as logger } from '~~/server/utils/logger';
 
 let shutdownInFlight: Promise<void> | null = null;
 let shuttingDown = false;
+let lastInitLogAt = 0;
 
 async function initializeCameraWithBackoff(cam: CameraStrategy): Promise<void> {
   let delay = 300;
@@ -17,7 +19,11 @@ async function initializeCameraWithBackoff(cam: CameraStrategy): Promise<void> {
       return;
     } catch (err) {
       if (shuttingDown) return;
-      logger.error('Failed to initialize camera strategy', err);
+      const now = Date.now();
+      if (now - lastInitLogAt >= 12_000) {
+        lastInitLogAt = now;
+        logger.info(`Camera: ${briefCameraConnectError(err)}`);
+      }
       await new Promise((resolve) => setTimeout(resolve, delay));
       delay = Math.min(maxDelay, Math.floor(delay * 1.8));
     }

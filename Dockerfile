@@ -19,14 +19,18 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     libvips42 \
     libusb-1.0-0 \
+    usbutils \
     udev \
+    tini \
+    procps \
   && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/.output ./.output
 COPY --from=build /app/server ./server
 COPY --from=build /app/public ./public
 COPY docker/canon-bridge-entrypoint.sh /usr/local/bin/canon-bridge-entrypoint.sh
-RUN chmod +x /usr/local/bin/canon-bridge-entrypoint.sh
+COPY docker/canon-bridge-health.sh /usr/local/bin/canon-bridge-health.sh
+RUN chmod +x /usr/local/bin/canon-bridge-entrypoint.sh /usr/local/bin/canon-bridge-health.sh
 
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0

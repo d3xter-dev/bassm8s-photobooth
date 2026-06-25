@@ -1,8 +1,12 @@
 import { join } from 'node:path';
+import { access } from 'node:fs/promises';
 import { createStorage } from 'unstorage';
 import fsDriver from 'unstorage/drivers/fs';
 import TelegramBot from 'node-telegram-bot-api';
 import { loggerTelegramQueue as logger } from '~~/server/utils/logger';
+
+// node-telegram-bot-api v0.66: use explicit file metadata (no buffer MIME deprecation noise)
+process.env.NTBA_FIX_350 ??= '1';
 
 /** JPEGs land here: `{id}.jpg` (original) and `{id}.wm.jpg` (watermarked). */
 export const OUTPUT_DIR = join(process.cwd(), 'output');
@@ -125,19 +129,24 @@ export async function processTelegramQueue(): Promise<void> {
     const tg = getBot(token);
 
     for (const { key, job } of entries) {
-      const wmRelPath = `${job.id}.wm.jpg`;
-      const wmBuffer = await photoOutputStorage.getItemRaw(wmRelPath).catch(() => null);
+      const wmFilename = `${safeJobKey(job.id)}.wm.jpg`;
+      const wmPath = join(OUTPUT_DIR, `${job.id}.wm.jpg`);
 
-      if (!wmBuffer) {
+      try {
+        await access(wmPath);
+      } catch {
         job.attempts += 1;
         job.lastError = 'watermarked file missing';
         await writePendingJob(key, job);
-        logger.error('Telegram queue: missing watermarked file', wmRelPath);
+        logger.error('Telegram queue: missing watermarked file', wmPath);
         continue;
       }
 
       try {
-        await tg.sendPhoto(chatId, wmBuffer);
+        await tg.sendPhoto(chatId, wmPath, {}, {
+          filename: wmFilename,
+          contentType: 'image/jpeg',
+        });
         await telegramPendingStorage.removeItem(key);
         logger.info('Telegram upload OK', job.id);
       } catch (err) {

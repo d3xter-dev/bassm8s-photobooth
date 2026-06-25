@@ -27,6 +27,8 @@ export type BridgeHealth = {
   eds: boolean;
   camera: boolean;
   liveView: boolean;
+  /** null when not on Linux / lsusb unavailable */
+  usbPresent: boolean | null;
   queueDepth: number;
   reconnecting: boolean;
   metrics: {

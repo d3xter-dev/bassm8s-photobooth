@@ -698,7 +698,10 @@ export class EdsdkSession {
     if (err !== EDS_ERR_OK) {
       this.evfConsecutiveFails++;
       const code = err >>> 0;
-      const fatal = code === (EDS_ERR_INVALID_PARAMETER >>> 0) || this.evfConsecutiveFails >= 12;
+      const fatal =
+        code === (EDS_ERR_INVALID_PARAMETER >>> 0) ||
+        code === 0x61 ||
+        this.evfConsecutiveFails >= 12;
       if (fatal) {
         this.evfConsecutiveFails = 0;
         return { fatal: `evf:0x${code.toString(16)}` };

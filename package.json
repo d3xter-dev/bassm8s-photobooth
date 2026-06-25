@@ -10,8 +10,12 @@
     "postinstall": "nuxt prepare",
     "canon-bridge": "bun server/camera/canon/canon-bridge.ts",
     "usbip:host": "./scripts/usbip/start-host.sh",
-    "docker:mac": "docker compose -f docker-compose.yml -f docker-compose.mac.yml up -d --build",
-    "docker:linux": "docker compose up -d --build"
+    "docker:mac": "./scripts/docker/mac-up.sh",
+    "docker:linux": "docker compose up -d --build",
+    "docker:bridge:recreate": "docker compose -f docker-compose.yml -f docker-compose.mac.yml build canon-bridge && ./scripts/docker/kill-stuck-bridge.sh; docker compose -f docker-compose.yml -f docker-compose.mac.yml up -d --no-deps --force-recreate canon-bridge",
+    "docker:bridge:kill": "./scripts/docker/kill-stuck-bridge.sh",
+    "docker:usbip:recreate": "docker compose -f docker-compose.yml -f docker-compose.mac.yml build usbip-attach && docker compose -f docker-compose.yml -f docker-compose.mac.yml up -d --force-recreate usbip-attach",
+    "docker:down": "docker compose -f docker-compose.yml -f docker-compose.mac.yml stop -t 3 photobooth 2>/dev/null || true; ./scripts/docker/kill-stuck-bridge.sh 2>/dev/null || true; docker compose -f docker-compose.yml -f docker-compose.mac.yml down --timeout 3"
   },
   "dependencies": {
     "@nuxt/eslint": "1.2.0",
