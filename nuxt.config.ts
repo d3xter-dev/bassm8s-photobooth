@@ -32,6 +32,10 @@ export default defineNuxtConfig({
       /** Target chat or channel for photo uploads (e.g. supergroup id). */
       chatId: '',
     },
+    watermark: {
+      /** Set NUXT_WATERMARK_DISABLED=true to skip logo overlay on captures. */
+      disabled: false,
+    },
     camera: {
       type: '',
       /** Base URL of the Bun canon-bridge (HTTP). Default matches CANON_BRIDGE_PORT. */
